@@ -1,0 +1,280 @@
+#include "topspin.hpp"
+
+using namespace std;
+
+char topspin::__verb__=0;
+char topspin::m_multi=0;
+char topspin::m_f=0;
+char * topspin::m_pdb=NULL;
+char topspin::m_prune=0;
+// symmetry variables
+char topspin::m_sym=0;
+char * topspin::m_D;
+char * topspin::m_E;
+
+topspin::topspin(const char n, const char k):m_k(k),m_n(n)
+{
+  m_tokens=new char[n];
+  for (char i = 0; i < n; ++i)
+      m_tokens[i]=i;
+}
+
+topspin::topspin(const vector<int>& v, const char k):m_k(k),m_n(v.size())
+{
+  m_tokens=new char[v.size()];
+  for (char i = 0; i < m_n; ++i)
+      m_tokens[i]=v[i];
+}
+
+topspin::topspin(const topspin& cp):m_n(cp.m_n),m_k(cp.m_k)
+{
+  m_tokens=new char[cp.m_n];
+  copy(cp.m_tokens,cp.m_tokens+cp.m_n,m_tokens);
+}
+
+topspin::~topspin()
+{
+  delete [] m_tokens;
+}
+
+// initializes the tokens (to simplify creating the initial stage)
+void topspin::init(const char * a)
+{
+  for (int i = 0; i < m_n; ++i)
+    m_tokens[i]=a[i];
+}
+
+void topspin::init(const vector<int>& a)
+{
+  for (int i = 0; i < m_n; ++i)
+    m_tokens[i]=a[i];
+}
+
+// spins k tokens starting from token i
+void topspin::move(int i)
+{
+  for (int j=0; j < m_k/2 ; ++j)
+      {
+	char aux=m_tokens[(i+m_k-1-j)%m_n];
+	m_tokens[(i+m_k-1-j)%m_n]=m_tokens[(i+j)%m_n];
+	m_tokens[(i+j)%m_n]=aux;
+      }
+}
+
+// return a list of valid operators.
+int topspin::opers(short prev) const
+{
+  char p=prev&0x00ff; // previous move
+  char pp=(prev&0xff00)>>8; // two moves ago
+  if(pp==2 && p==1)
+    char dummy=1;
+  int ans=0;
+  for (int i = 0; i < m_n; ++i){
+    if(i+m_k<p)
+      continue;
+    if(m_prune && pp==p+(m_k/2) && pp==i && m_k&1==0){
+      continue;
+    }
+    if(p!=i)
+      ans|=1<<i;
+  }
+  return ans;
+}
+
+int topspin::goal() const
+{
+  for (int i = 1; i < m_n; ++i)
+      if(m_tokens[i]!=m_tokens[i-1]+1 && m_tokens[i]!=0)
+	return 0;
+
+  return 1;
+}
+
+// prints a rotated version of the puzzle starting with token at
+// position <first>. Print only fringe tokens or all tokens if option
+// -f is omitted
+void topspin::print(char first) const
+{
+  for (int i = first; i < m_n; ++i){
+    int t=m_tokens[i];
+    if(t<=m_f || !m_f)
+      cout<<t<<" ";
+    else 
+      cout<<"x ";
+  }
+  for (int i = 0; i < first; ++i){
+    int t=m_tokens[i];
+    if(t<=m_f || !m_f)
+      cout<<t<<" ";
+    else 
+      cout<<"x ";
+  }
+}
+
+// interactive mode
+void topspin::play()
+{
+  cout<<this<<endl;
+  int j;
+  while(cin>>j){
+    this->move(j);
+    cout<<j<<':'<<this<<endl;
+  }
+}
+
+// heuristic functions. 
+
+// The parameter is to implement the translation. <first> is the token
+// to be considered the lowest number used in the pattern space
+int topspin::hashval(char first) const
+{
+  if(__verb__){
+    cout<<"hashval{ ";
+    cout<<*this;
+    cout<<" f:"<<(int)m_f<<" first:"<<(int)first;
+  }
+
+  char * _tokens=new char[m_n];
+  int index=0;			// hash index
+  short zero=0;			// position of $first
+  // in n-puzzle this for loop is unnecessary, as we are always
+  // considering the beginning of the permutation to be position 0
+  // (because we don't do translation)
+
+  // initialize array over which the index will be computed
+  for (int i = 0; i < m_n; ++i){
+    char e=m_tokens[i];
+    _tokens[i]=e<first?e+m_n-first:e-first;
+    if(_tokens[i]==0)
+      zero=i;
+  }
+
+  short u=m_n;      // unassigned or available pos
+  for(int i=0;i<m_f;i++){
+    int smaller=0,j=0,p=zero;
+    for(j=0;j<m_n;++j){
+      if(_tokens[p]<i)
+	smaller++;
+      else if(_tokens[p]==i)
+	break;
+      p=(p+1)%m_n;
+    }
+    index=index*u+j-smaller;
+    u--;
+  }
+  
+  if(__verb__){
+    cout<<" return:"<<index;
+    cout<<" }"<<endl;
+  }
+  delete [] _tokens;
+  return index;
+}
+
+short topspin::h() const
+{
+  if(__verb__){
+    cout<<" h { ";
+  }    
+  // no pdb
+  if(!m_f || m_pdb==NULL)
+    return 0;
+  // doing lookups
+  short ans=0;
+  for (int i = 0; i <= m_multi; ++i){
+    short val=m_pdb[this->hashval(i)];
+    ans=max(ans,val);
+  }
+  if(__verb__) cout<<"m_sym:"<<(int)m_sym<<endl;
+  if(m_sym){
+    topspin _ts(*this);
+    _ts.sym();
+    if(__verb__) cout<<"sym:";
+    for (int i = 0; i <= m_multi; ++i){
+      short val=m_pdb[_ts.hashval(i)];
+      ans=max(ans,val);
+      if(__verb__) {cout<<" val:"<<val<<" ans:"<<ans<<endl;}
+    }
+  }
+  // verbosity
+  if(__verb__){
+    cout<<" return:"<<ans;
+    cout<<"}"<<endl;
+  }
+  return ans;
+}
+
+// symmetry stuff
+void topspin::sym()
+{
+  char ans[m_n];
+  for (int i = 0; i < m_n; ++i){
+    ans[i]=m_E[m_tokens[m_D[i]]];
+  }
+  memcpy(m_tokens,ans,m_n);
+}
+
+// should this be static?
+void topspin::init_sym(char offset, char reverse)
+{
+
+  m_sym=offset;
+  if(__verb__) cout<<"init_sym:"<<"m_sym:"<<(int)m_sym<<endl;
+  // watch out for this possible memory leak when using more than one
+  // symmetry
+  m_D=new char [m_n];
+  m_E=new char [m_n];
+  if(reverse==0)
+    for (int i = 0; i < m_n; ++i){
+      m_D[i]=i-m_sym;
+      if(m_D[i]<0) m_D[i]+=m_n;
+      m_E[i]=(i+m_sym)%m_n;
+    }
+  else 				// 1->5, 2->4, etc
+    for (int i = 0; i < m_n; ++i){
+      m_D[i]=i-m_sym;
+      if(m_D[i]<0) m_D[i]+=m_n;
+      m_E[i]=(i+m_sym)%m_n;
+    }
+    
+}
+
+// seters
+void topspin::set_pdb(char * pdb,char fringe)
+{
+  m_pdb=pdb;
+  m_f=fringe;
+}
+
+// operators
+ostream& operator<<(ostream& out, const topspin& ts)
+{
+  for (int i = 0; i < ts.m_n; ++i)
+    out<<(int)ts.m_tokens[i]<<' ';
+
+ return out;
+}
+
+char topspin::operator[](size_t i) const
+{
+  return m_tokens[i];
+}
+
+
+// Pattern space begins here
+tspattern::tspattern(char N, char K, char f):topspin(N,K)
+{
+  m_f=f;
+  for (int i = 0; i < N; ++i)
+    m_tokens[i]=i<f?i:N;
+}
+
+tspattern::tspattern(const tspattern& cp):topspin(cp)
+{
+  //copy(cp.m_tokens,cp.m_tokens+cp.m_n,m_tokens);
+}
+
+tspattern::~tspattern()
+{
+  return;
+}
